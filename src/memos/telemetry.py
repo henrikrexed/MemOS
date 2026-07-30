@@ -22,11 +22,12 @@ import time
 from contextlib import contextmanager
 from typing import Any, Callable
 
-from opentelemetry import metrics, trace
+from opentelemetry import metrics, propagate, trace
 from opentelemetry._logs import get_logger_provider, set_logger_provider
 from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
 from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.propagators.composite import CompositeHTTPPropagator
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.metrics import MeterProvider
@@ -36,6 +37,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.semconv.resource import ResourceAttributes
 from opentelemetry.trace import Status, StatusCode
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +108,12 @@ def configure(
             ResourceAttributes.SERVICE_NAME: service_name,
             ResourceAttributes.SERVICE_VERSION: service_version,
         }
+    )
+
+    # Install W3C TraceContext propagator so traceparent/tracestate headers are
+    # extracted from incoming requests and injected into outgoing calls.
+    propagate.set_global_textformat_propagator(
+        CompositeHTTPPropagator([TraceContextTextMapPropagator()])
     )
 
     # --- Traces ---

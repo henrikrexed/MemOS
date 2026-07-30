@@ -136,6 +136,36 @@ def test_tier_constants_match_semconv():
     assert tel.TIER_PREFERENCE == "preference"
 
 
+def test_context_propagation_traceparent(in_memory_providers):
+    """Memory spans become children of a parent context from a traceparent header."""
+    from opentelemetry import context as otel_context
+    from opentelemetry.propagate import extract
+
+    span_exporter, _ = in_memory_providers
+
+    # Simulate an agent sending a W3C traceparent header
+    agent_trace_id = "0af7651916cd43dd8448eb211c80319c"
+    agent_span_id  = "b7ad6b7169203331"
+    carrier = {"traceparent": f"00-{agent_trace_id}-{agent_span_id}-01"}
+    parent_ctx = extract(carrier)
+
+    token = otel_context.attach(parent_ctx)
+    try:
+        with tel.memory_span("search", tel.TIER_TEXTUAL, {"memory.query.text": "agent query"}):
+            pass
+    finally:
+        otel_context.detach(token)
+
+    spans = span_exporter.get_finished_spans()
+    assert len(spans) == 1
+    span = spans[0]
+    # Parent trace ID must match the agent's traceparent
+    assert format(span.context.trace_id, '032x') == agent_trace_id
+    # The span must have a parent (the agent's span)
+    assert span.parent is not None
+    assert format(span.parent.span_id, '016x') == agent_span_id
+
+
 def test_memory_span_all_operations(in_memory_providers):
     span_exporter, _ = in_memory_providers
 

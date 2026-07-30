@@ -15,6 +15,15 @@ from memos.api.middleware.request_context import RequestContextMiddleware
 from memos.api.routers import server_router as server_router_module
 from memos.plugins.manager import plugin_manager
 
+# OTel: instrument FastAPI so agent HTTP calls produce end-to-end traces.
+# FastAPIInstrumentor extracts W3C traceparent/tracestate headers from each
+# request and creates a server span — memory.* spans become its children.
+try:
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor as _FastAPIInstrumentor
+    _OTEL_FASTAPI_AVAILABLE = True
+except ImportError:
+    _OTEL_FASTAPI_AVAILABLE = False
+
 
 load_dotenv()
 
@@ -46,6 +55,13 @@ app = FastAPI(
 app.mount("/download", StaticFiles(directory=os.getenv("FILE_LOCAL_PATH")), name="static_mapping")
 
 app.add_middleware(RequestContextMiddleware, source="server_api")
+
+# Attach OTel FastAPI instrumentation when the telemetry module has been configured.
+# This creates server-side spans for each request and propagates W3C traceparent
+# headers, so downstream memory.* spans appear nested under the agent's root span.
+if _OTEL_FASTAPI_AVAILABLE:
+    _FastAPIInstrumentor.instrument_app(app)
+
 # Include routers
 app.include_router(server_router_module.router)
 
