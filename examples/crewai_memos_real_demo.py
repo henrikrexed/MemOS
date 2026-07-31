@@ -398,7 +398,7 @@ analysis_task = Task(
         "'MemOS OTel instrumentation (memory-semconv v0.1.0): spans on add/search/update/delete, "
         "memory.tier attribute (textual/activation/parametric/preference), "
         "W3C TraceContext propagation for end-to-end Dynatrace traces. "
-        "CrewAI agents use Ollama (qwen2.5:0.5b) and emit real telemetry.'\n"
+        "CrewAI agents use Ollama (qwen3.6:latest) and emit real telemetry.'\n"
         "Report what you found and what you updated."
     ),
     expected_output=(
@@ -453,4 +453,4 @@ time.sleep(5)
 print("  Done. In Dynatrace, filter by:")
 print("    service.name = memos-crewai-real")
 print("    OR memory.tier = textual")
-print("    OR crewai.llm.model = qwen2.5:0.5b")
+print("    OR crewai.llm.model = qwen3.6:latest")
