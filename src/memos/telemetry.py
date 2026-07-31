@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import os
 import time
 
 from contextlib import contextmanager
@@ -162,6 +163,74 @@ def configure(
     _otel_logger = logging.getLogger(f"{INSTRUMENT_NAME}.ops")
 
     _initialized = True
+
+
+def _resolve_service_version(explicit: str | None = None) -> str:
+    """Best-effort service.version: explicit env value, else installed pkg, else 0.0.0."""
+    if explicit:
+        return explicit
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+
+        for dist in ("MemoryOS", "memoryos", "memos"):
+            try:
+                return version(dist)
+            except PackageNotFoundError:
+                continue
+    except Exception:  # pragma: no cover - importlib.metadata always present on 3.11
+        pass
+    return "0.0.0"
+
+
+def configure_from_env() -> bool:
+    """
+    Bootstrap OTel from environment variables at process startup.
+
+    This is the server-side bootstrap that makes the ``memory.*`` spans/metrics/logs
+    emitted by the instrumentation in ``memos.mem_os.core`` actually reach a
+    collector.  Without it, ``get_tracer()``/``get_meter()`` return the global
+    no-op providers and nothing is exported.
+
+    Telemetry is enabled only when an OTLP endpoint is configured, so local/dev
+    runs without a collector stay a pure no-op.  Recognised variables:
+
+      OTEL_EXPORTER_OTLP_ENDPOINT   gRPC OTLP endpoint (enables telemetry when set),
+                                    e.g. http://otel-collector.observability:4317
+      OTEL_SERVICE_NAME             service.name resource attribute (default: memos)
+      OTEL_SERVICE_VERSION          service.version (default: installed package version)
+      OTEL_METRIC_EXPORT_INTERVAL   metric export interval in ms (default: 5000)
+      MEMOS_OTEL_ENABLED            set to a falsy value to force-disable even when
+                                    an endpoint is present
+
+    Returns True when telemetry was configured, False when it was skipped.
+    """
+    enabled_flag = os.getenv("MEMOS_OTEL_ENABLED")
+    if enabled_flag is not None and enabled_flag.strip().lower() in {
+        "0",
+        "false",
+        "no",
+        "off",
+        "",
+    }:
+        return False
+
+    endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+    if not endpoint:
+        # No collector configured — leave the SDK as a no-op so local runs are silent.
+        return False
+
+    try:
+        interval_ms = int(os.getenv("OTEL_METRIC_EXPORT_INTERVAL", "5000"))
+    except ValueError:
+        interval_ms = 5000
+
+    configure(
+        service_name=os.getenv("OTEL_SERVICE_NAME", "memos"),
+        service_version=_resolve_service_version(os.getenv("OTEL_SERVICE_VERSION")),
+        otlp_endpoint=endpoint,
+        export_interval_ms=interval_ms,
+    )
+    return _initialized
 
 
 def get_tracer() -> trace.Tracer:

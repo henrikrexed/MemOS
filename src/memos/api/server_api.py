@@ -15,9 +15,16 @@ from memos.api.middleware.request_context import RequestContextMiddleware
 from memos.api.routers import server_router as server_router_module
 from memos.plugins.manager import plugin_manager
 
-# OTel: instrument FastAPI so agent HTTP calls produce end-to-end traces.
-# FastAPIInstrumentor extracts W3C traceparent/tracestate headers from each
-# request and creates a server span — memory.* spans become its children.
+# OTel: bootstrap the SDK (TracerProvider + OTLP exporters) from the environment,
+# then instrument FastAPI so agent HTTP calls produce end-to-end traces.
+#
+# configure_from_env() MUST run before FastAPIInstrumentor.instrument_app() so the
+# instrumentor binds to the real (exporting) TracerProvider rather than the global
+# no-op default.  It is a no-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set, so local
+# runs without a collector stay silent.  In the memory-benchmark cluster we set
+# OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector.observability:4317.
+from memos import telemetry as _telemetry
+
 try:
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor as _FastAPIInstrumentor
     _OTEL_FASTAPI_AVAILABLE = True
@@ -56,9 +63,22 @@ app.mount("/download", StaticFiles(directory=os.getenv("FILE_LOCAL_PATH")), name
 
 app.add_middleware(RequestContextMiddleware, source="server_api")
 
-# Attach OTel FastAPI instrumentation when the telemetry module has been configured.
-# This creates server-side spans for each request and propagates W3C traceparent
-# headers, so downstream memory.* spans appear nested under the agent's root span.
+# Bootstrap the OTel SDK from env (no-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set),
+# then attach FastAPI instrumentation. Ordering matters: instrument_app() binds to
+# whatever TracerProvider is global at call time, so configure_from_env() runs first.
+_OTEL_CONFIGURED = _telemetry.configure_from_env()
+if _OTEL_CONFIGURED:
+    logger.info(
+        "[SERVER_API] OTel telemetry configured -> %s (service=%s)",
+        os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+        os.getenv("OTEL_SERVICE_NAME", "memos"),
+    )
+else:
+    logger.info("[SERVER_API] OTel telemetry not configured (OTEL_EXPORTER_OTLP_ENDPOINT unset)")
+
+# Attach OTel FastAPI instrumentation. This creates server-side spans for each
+# request and propagates W3C traceparent headers, so downstream memory.* spans
+# appear nested under the agent's root span.
 if _OTEL_FASTAPI_AVAILABLE:
     _FastAPIInstrumentor.instrument_app(app)
 
