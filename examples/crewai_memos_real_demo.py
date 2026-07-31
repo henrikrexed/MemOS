@@ -3,18 +3,19 @@
 CrewAI + MemOS Real Agent Demo (memory-semconv v0.1.0)
 
 Real architecture:
-  CrewAI Agent (Ollama qwen2.5:0.5b LLM)
+  CrewAI Agent (Ollama qwen3.6:latest LLM @ 10.0.0.185)
     → decides to call MemOS memory tools
     → MemOS stores/retrieves memories using Ollama nomic-embed-text embeddings
     → all operations emit real OTel spans → Dynatrace
 
 Requirements:
-  - Ollama running on localhost:11434 with qwen2.5:0.5b + nomic-embed-text
+  - Ollama at OLLAMA_HOST (default: http://10.0.0.185:11434) with qwen3.6:latest + nomic-embed-text
   - otelcol-contrib running on localhost:4317
   - NAS venv: /mnt/nas/tools/memos-crewai-env
 
 Usage:
   /mnt/nas/tools/memos-crewai-env/bin/python3.13 examples/crewai_memos_real_demo.py
+  OLLAMA_HOST=http://10.0.0.185:11434 OLLAMA_CHAT_MODEL=qwen3.6:latest ... (above)
 """
 import logging
 import os
@@ -62,13 +63,60 @@ from opentelemetry import trace
 tracer = tel.get_tracer()
 
 # ---------------------------------------------------------------------------
+# 2b. Qwen3.6 compatibility hook
+#     Qwen3.6-nothink returns empty when "Observation:" is appended to
+#     assistant messages (CrewAI ReAct default). This hook moves each
+#     Observation into a separate user message so the model responds correctly.
+# ---------------------------------------------------------------------------
+from crewai.hooks.llm_hooks import register_before_llm_call_hook
+
+
+def _qwen36_observation_hook(ctx) -> None:
+    """Fix qwen3.6 ReAct incompatibility: the model returns empty when:
+      1. A user message ends with 'Thought: ...' (CrewAI's initial prompt suffix)
+      2. An assistant message contains 'Observation:' (should be a user message)
+    Both fixes move those fragments to the correct role.
+    """
+    reformatted = []
+    changed = False
+    for msg in ctx.messages:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        if role == "user" and "\n\nThought:" in content:
+            # Move trailing "Thought: ..." into a separate assistant message
+            parts = content.split("\n\nThought:", 1)
+            reformatted.append({"role": "user", "content": parts[0].rstrip()})
+            reformatted.append({"role": "assistant", "content": "Thought:" + parts[1]})
+            changed = True
+        elif role == "assistant" and "\nObservation:" in content:
+            # Move "Observation: ..." into a user message
+            parts = content.split("\nObservation:", 1)
+            reformatted.append({"role": "assistant", "content": parts[0].rstrip()})
+            reformatted.append({"role": "user", "content": "Observation: " + parts[1].lstrip()})
+            changed = True
+        else:
+            reformatted.append(msg)
+    if changed:
+        ctx.messages[:] = reformatted
+
+
+register_before_llm_call_hook(_qwen36_observation_hook)
+print("[Hook] Qwen3.6 observation-reformat hook registered")
+
+# ---------------------------------------------------------------------------
 # 3. Lightweight in-process MemOS memory backend
 #    Uses Ollama for embeddings (nomic-embed-text) + semantic cosine search
 #    No qdrant/sentence_transformers needed
 # ---------------------------------------------------------------------------
-import ollama as _ollama
+import ollama as _ollama_lib
 
-OLLAMA_CHAT_MODEL = os.environ.get("OLLAMA_CHAT_MODEL", "qwen2.5:0.5b")
+def _ollama_client():
+    return _ollama_lib.Client(host=OLLAMA_HOST)
+
+OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://10.0.0.185:11434")
+# qwen3.6-nothink is qwen3.6:latest with PARAMETER think=false so CrewAI
+# can parse responses without stripping <think>...</think> tokens.
+OLLAMA_CHAT_MODEL = os.environ.get("OLLAMA_CHAT_MODEL", "qwen3.6-nothink")
 OLLAMA_EMBED_MODEL = os.environ.get("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 
 # In-memory store: list of {id, content, embedding, metadata}
@@ -77,7 +125,7 @@ _memory_id_counter = 0
 
 
 def _embed(text: str) -> list[float]:
-    resp = _ollama.embeddings(model=OLLAMA_EMBED_MODEL, prompt=text)
+    resp = _ollama_client().embeddings(model=OLLAMA_EMBED_MODEL, prompt=text)
     return resp["embedding"]
 
 
@@ -277,7 +325,8 @@ from crewai import LLM
 
 ollama_llm = LLM(
     model=f"ollama/{OLLAMA_CHAT_MODEL}",
-    base_url="http://localhost:11434",
+    base_url=OLLAMA_HOST,
+    timeout=600,  # qwen3.6 (22GB) needs ~2 min per call on CPU
 )
 
 # ---------------------------------------------------------------------------
@@ -299,7 +348,7 @@ researcher = Agent(
     tools=[MemOSStoreTool(), MemOSSearchTool()],
     llm=ollama_llm,
     verbose=True,
-    max_iter=4,
+    max_iter=6,
     allow_delegation=False,
 )
 
@@ -317,7 +366,7 @@ analyst = Agent(
     tools=[MemOSSearchTool(), MemOSUpdateTool(), MemOSDeleteTool()],
     llm=ollama_llm,
     verbose=True,
-    max_iter=4,
+    max_iter=6,
     allow_delegation=False,
 )
 
@@ -371,8 +420,8 @@ crew = Crew(
 
 print("\n" + "=" * 66)
 print("  CrewAI + MemOS Real Agent Demo")
-print(f"  LLM:       Ollama {OLLAMA_CHAT_MODEL}")
-print(f"  Embedder:  Ollama {OLLAMA_EMBED_MODEL}")
+print(f"  LLM:       Ollama {OLLAMA_CHAT_MODEL} @ {OLLAMA_HOST}")
+print(f"  Embedder:  Ollama {OLLAMA_EMBED_MODEL} @ {OLLAMA_HOST}")
 print(f"  OTel:      {OTLP_ENDPOINT} → Dynatrace")
 print("=" * 66 + "\n")
 
@@ -384,6 +433,7 @@ with tracer.start_as_current_span(
         "crewai.crew.name": "memos-research-crew",
         "crewai.llm.model": OLLAMA_CHAT_MODEL,
         "crewai.llm.provider": "ollama",
+        "crewai.llm.host": OLLAMA_HOST,
         "memory.backend": "ollama",
         "memory.embed_model": OLLAMA_EMBED_MODEL,
     },
