@@ -112,7 +112,7 @@ def configure(
 
     # Install W3C TraceContext propagator so traceparent/tracestate headers are
     # extracted from incoming requests and injected into outgoing calls.
-    propagate.set_global_textformat_propagator(
+    propagate.set_global_textmap(
         CompositeHTTPPropagator([TraceContextTextMapPropagator()])
     )
 
