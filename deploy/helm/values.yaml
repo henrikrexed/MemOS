@@ -12,7 +12,18 @@ memos:
   service:
     type: ClusterIP
     port: 8000
-  
+
+  # OpenTelemetry export. When enabled, the server bootstraps the OTel SDK at
+  # startup (telemetry.configure_from_env) and exports memory-semconv v0.1.0
+  # spans/metrics/logs for add/search/update/delete to the OTLP endpoint.
+  # For the memory-benchmark cluster point this at the in-cluster LGTM collector.
+  otel:
+    enabled: false
+    endpoint: "http://otel-collector.observability:4317"
+    serviceName: "memos"
+    # memory.sut.name tags every span/metric so results stay comparable across backends.
+    resourceAttributes: "memory.sut.name=memos,memory.sut.architecture=vector+graph"
+
   resources:
     limits:
       cpu: 2000m

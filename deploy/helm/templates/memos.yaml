@@ -49,6 +49,18 @@ spec:
                 secretKeyRef:
                   name: {{ include "memos.memos.fullname" . }}-secret
                   key: memrader-api-key
+            {{- if .Values.memos.otel.enabled }}
+            # OTel: bootstrap the SDK from these vars (telemetry.configure_from_env).
+            # memory.* spans/metrics/logs -> LGTM stack. No-op if endpoint is unset.
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.memos.otel.endpoint | quote }}
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "grpc"
+            - name: OTEL_SERVICE_NAME
+              value: {{ .Values.memos.otel.serviceName | quote }}
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: {{ .Values.memos.otel.resourceAttributes | quote }}
+            {{- end }}
           resources:
             {{- toYaml .Values.memos.resources | nindent 12 }}
           livenessProbe:
